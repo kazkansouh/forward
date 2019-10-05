@@ -1,0 +1,54 @@
+#! /bin/sh
+
+if test "$1" = "exit"; then
+    if test -z "$(docker ps -f name=forward -q)" ; then
+        echo "Not running"
+    else
+        docker kill forward
+    fi
+    exit
+fi
+
+if test "$#" -ne 0; then
+    echo "usage: $(basename $0) [exit]"
+    exit
+fi
+
+INTERFACE=tun0
+IPADDR=$(ip -4 addr show dev ${INTERFACE} | grep -oP '\d{1,3}(\.\d{1,3}){3}(?=/)')
+LISTEN_PORT=2222
+
+if test -z "${IPADDR}"; then
+    echo "Could not find the ip address of ${INTERFACE}"
+    exit 1
+fi
+
+if test -z "$(docker ps -f name=forward -q)" ; then
+    echo "Starting docker container: $(docker run --rm -p ${LISTEN_PORT}:22 --name forward -d forward)"
+    sleep 2
+else
+    echo "Docker already started: $(docker ps -f name=forward -q)"
+    echo "Stop with: $(basename $0) exit"
+fi
+
+PASS=$(docker inspect forward | grep -oP '(?<=PASSWORD": ")[^"]+') 
+if test -z "${PASS}"; then
+    echo "Warning: could not find pass in docker config"
+elif test "UNDEFINED" = "${PASS}" ; then
+    PASS=$(docker cp forward:/password - | tar xOf -)
+fi
+
+
+
+INST_IPADDR=$(docker inspect forward | grep -oP '(?<=IPAddress": ")\d{1,3}(\.\d{1,3}){3}' -m 1)
+echo "Docker ip address: ${INST_IPADDR}"
+echo "To connect use credentials forward:${PASS} . Example commands:"
+echo "  ssh forward@${IPADDR} -p ${LISTEN_PORT} -Nf -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -R 3306:localhost:3306"
+echo "  ssh forward@${IPADDR} -p ${LISTEN_PORT} -Nf -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i /tmp/id -R 4445:10.10.10.81:445"
+echo "  echo y | Plink.exe -R 4445:localhost:445 -P ${LISTEN_PORT} -N -pw ${PASS} -ssh -l forward ${IPADDR} 2>&1"
+echo
+echo "If needed, use iptables to bounce connection:"
+echo "  iptables -t nat -A OUTPUT -d 10.10.10.81 -p tcp --dport 445 -j DNAT --to ${INST_IPADDR}:4445"
+echo
+echo "forward's private key is"
+docker cp forward:/home/forward/.ssh/id - | tar xOf -
